@@ -2,11 +2,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTools } from "./tools.ts";
 import { registerPrompts } from "./prompts.ts";
 import { attestationEnabled } from "./attestation.ts";
+import { importPlugins, type BankPlugin } from "./plugins.ts";
+import { pluginContext } from "./tools.ts";
 
 export const VERSION = "0.1.15";
 
 /** The MCP server for one request. `attestOnly` is for a token granted bank:attest alone: it gets attest_account and nothing else. */
-export function createServer(opts: { attestOnly?: boolean } = {}): McpServer {
+export function createServer(opts: { attestOnly?: boolean; plugins?: BankPlugin[] } = {}): McpServer {
   if (opts.attestOnly) {
     const server = new McpServer(
       { name: "bank", version: VERSION },
@@ -36,5 +38,25 @@ export function createServer(opts: { attestOnly?: boolean } = {}): McpServer {
   );
   registerTools(server);
   registerPrompts(server);
+  for (const plugin of opts.plugins ?? configuredPlugins) plugin.register(server, pluginContext());
   return server;
 }
+
+/**
+ * Imports the plugins named in a BANKMCP_PLUGINS value and registers them once on a probe server, so a plugin
+ * that throws or takes an existing tool or prompt name fails here, at startup, rather than on every request.
+ */
+export async function loadPlugins(spec: string | undefined): Promise<BankPlugin[]> {
+  const plugins = await importPlugins(spec);
+  for (let i = 0; i < plugins.length; i++) {
+    try {
+      createServer({ plugins: plugins.slice(0, i + 1) });
+    } catch (err) {
+      throw new Error(`Plugin ${plugins[i]!.path} could not be registered: ${(err as Error).message}`);
+    }
+  }
+  return plugins;
+}
+
+const configuredPlugins: BankPlugin[] = [];
+configuredPlugins.push(...(await loadPlugins(process.env.BANKMCP_PLUGINS)));
