@@ -270,6 +270,16 @@ MCP client with tool calling (LM Studio, Goose, Jan) can also point at
 `node src/stdio.ts` directly. Enable Banking still sits between you and the
 bank either way; that part is regulated and unavoidable.
 
+## Plugins
+
+`BANKMCP_PLUGINS` adds tools and prompts without changing this code: a comma-separated list of
+module paths, each exporting `register(server, ctx)` (types in `src/plugins.ts`). They are loaded
+once at startup. A plugin that fails to load, or that registers a tool or prompt name already
+taken, stops startup with an error naming its path. `ctx` gives read-only data only: the connected
+accounts, transactions across accounts with transfers between them marked (`own_transfer`, the same
+rule `monthly_summary` uses), and balances. Plugins never see tokens, sessions or keys, and a token
+granted `bank:attest` alone never sees plugin tools. Unset, nothing changes.
+
 ## Security notes
 
 - The server is a complete OAuth 2.1 authorization server with one user.

@@ -32,6 +32,7 @@ import {
   type AttestationClaims,
 } from "./attestation.ts";
 import { BankGuard, BankReadError, type GuardedRead } from "./bankguard.ts";
+import { markOwnTransfers, type PluginBalance, type PluginContext } from "./plugins.ts";
 
 const MAX_CONSENT_DAYS = 180;
 
@@ -288,6 +289,42 @@ function registerAttestation(server: McpServer): void {
 }
 
 /** Every tool, or only attest_account for a token granted for attestation alone. */
+/** Identifiers of the connected accounts, as monthly_summary uses them to recognise own transfers. */
+function ownAccountIds(): string[] {
+  return store()
+    .accounts()
+    .flatMap((a) => [a.iban, a.other_id].filter((v): v is string => Boolean(v)));
+}
+
+/** Read-only bank data for plugins (see plugins.ts), through the same guarded reads the tools use. */
+export function pluginContext(): PluginContext {
+  return {
+    accounts: () =>
+      store()
+        .accounts()
+        .map((a) => ({ uid: a.uid, name: a.name, label: a.label, currency: a.currency, iban: a.iban })),
+    transactions: async ({ accounts, from, to }) => {
+      const { transactions, checked } = await fetchAcross(accounts, from, to);
+      return { transactions: markOwnTransfers(transactions, ownAccountIds()), checked };
+    },
+    balances: async ({ accounts } = {}) => {
+      const list = accounts?.length ? accounts.map(resolveAccount) : store().accounts();
+      const out: PluginBalance[] = [];
+      for (const account of list) {
+        const name = account.label ?? account.name ?? account.uid;
+        try {
+          const r = await withAccount(account.uid, "balances", async (a) => simplifyBalances(await eb.getBalances(a.uid)));
+          out.push({ uid: account.uid, account: name, currency: account.currency, booked: r.value.booked, available: r.value.available });
+        } catch (err) {
+          if (!(err instanceof ToolError || err instanceof BankReadError)) throw err;
+          out.push({ uid: account.uid, account: name, currency: account.currency, error: err.message });
+        }
+      }
+      return out;
+    },
+  };
+}
+
 export function registerTools(server: McpServer, opts: { attestOnly?: boolean } = {}): void {
   if (opts.attestOnly) return registerAttestation(server);
 
@@ -563,10 +600,7 @@ export function registerTools(server: McpServer, opts: { attestOnly?: boolean } 
     },
     guard(async ({ accounts, from, to }) => {
       const { transactions, checked } = await fetchAcross(accounts, from ?? daysAgo(90), to ?? isoDate());
-      const ownIds = store()
-        .accounts()
-        .flatMap((a) => [a.iban, a.other_id].filter((v): v is string => Boolean(v)));
-      const transfers = findOwnTransfers(transactions, ownIds);
+      const transfers = findOwnTransfers(transactions, ownAccountIds());
       const transferTotals: Record<string, number> = {};
       for (const t of transfers) if (t.amount < 0) transferTotals[t.currency] = round2((transferTotals[t.currency] ?? 0) - t.amount);
       return json({
